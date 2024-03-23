@@ -4,6 +4,6 @@ bin
 instance
 libraries
 version
-instance_version.cfg
+instance_versions.cfg
 main
 version_manifest_v2.json
