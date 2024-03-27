@@ -4,7 +4,7 @@ bin
 instance
 libraries
 version
-instance_versions.cfg
+instances_versions.cfg
 main
 version_manifest_v2.json
 howto_git.txt
