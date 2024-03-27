@@ -7,3 +7,5 @@ version
 instance_versions.cfg
 main
 version_manifest_v2.json
+howto_git.txt
+.vscode

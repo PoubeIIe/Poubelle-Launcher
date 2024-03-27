@@ -10,6 +10,12 @@
 #include <chrono>
 #include <thread>
 #include <algorithm>
+#include <mutex>
+#include <iomanip>
+#include <sstream>
+#include <vector>
+
+std::mutex downloadedSizeMutex;
 
 size_t write_data(void *ptr, size_t size, size_t nmemb, FILE *stream) {
   size_t written = fwrite(ptr, size, nmemb, stream);
@@ -19,7 +25,6 @@ size_t writeCallback(char* ptr, size_t size, size_t nmemb, std::string* data) {
     data->append(ptr, size * nmemb);
     return size * nmemb;
 }
-
 
 int downloadFile(const char *url, const char *output_filename) {
   CURL *curl;
@@ -501,9 +506,9 @@ int main() {
     downloadFile("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json","version_manifest_v2.json");
   }
 
-  if (std::filesystem::exists("instance_versions.cfg") && std::filesystem::is_regular_file("instance_versions.cfg")) {
+  if (std::filesystem::exists("instances_versions.cfg") && std::filesystem::is_regular_file("instances_versions.cfg")) {
   } else {
-    std::ofstream {"instance_versions.cfg"};
+    std::ofstream {"instances_versions.cfg"};
   }
 
   std::cout << "[1] Start an instance [TODO]" << std::endl;
@@ -519,7 +524,7 @@ int main() {
     std::vector<std::string> instanceNameList;
     std::vector<std::string>::iterator it;
     // search for instance file one to show the available instances
-    for (const auto &entry : std::filesystem::directory_iterator("instance")) {
+    for (const auto &entry : std::filesystem::directory_iterator("instances")) {
       formatedInstancePath = entry.path();
       for (char &ch : formatedInstancePath) {
         if(ch == '_'){
@@ -533,7 +538,7 @@ int main() {
       for (it = instanceNameList.begin(); it != instanceNameList.end(); ++it){
         std::cout << *it << std::endl;
       }
-    std::cout << "Quel instance?\n>> " << std::endl;
+    std::cout << "Which instance?\n>> " << std::endl;
     std::string instanceName;
     std::cin.ignore();
     std::getline(std::cin, instanceName);
@@ -546,8 +551,8 @@ int main() {
         std::cout<<"instance \""<<showInstanceName<<"\" selected"<<std::endl;
 
 
-        if (std::filesystem::exists("instance_versions.cfg") && std::filesystem::is_regular_file("instance_versions.cfg")) {
-          std::ifstream cFile ("instance_versions.cfg");
+        if (std::filesystem::exists("instances_versions.cfg") && std::filesystem::is_regular_file("instances_versions.cfg")) {
+          std::ifstream cFile ("instances_versions.cfg");
           if (cFile.is_open())
           {
 
@@ -568,7 +573,7 @@ int main() {
                   if (name == name){
                     std::cout<<name<<" "<<value<<std::endl;
                     std::cout << value << '\n';
-                    startGame("instance/"+name, value);
+                    startGame("instances/"+name, value);
 
                   }
               }
@@ -579,7 +584,7 @@ int main() {
           }
 
         }else{
-          std::cout<<"instance_version.cgf not found, if no instance was created, this can be ignored\n but if there are instances, we can't determine instance's version\nyou can recreate the file yourself and add\"{instance_name}={instance_version}\" if you know the version"<<std::endl;
+          std::cout<<"instances_version.cgf not found, if no instances was created, this can be ignored\n but if there are instances, we can't determine instance's version\nyou can recreate the file yourself and add\"{instance_name}={instance_version}\" if you know the version"<<std::endl;
         }
       }
     }
@@ -590,7 +595,7 @@ int main() {
     std::string instanceName;
     std::cin.ignore();
     std::getline(std::cin, instanceName);
-    gamePath = "instance/"+instanceName;
+    gamePath = "instances/"+instanceName;
     std::cout << "Instance's version : ";
     std::string instanceVersion;
     std::getline(std::cin, instanceVersion);
@@ -623,7 +628,7 @@ int main() {
     }
     std::ofstream outfile;
 
-    outfile.open("instance_versions.cfg", std::ios_base::app);
+    outfile.open("instances_versions.cfg", std::ios_base::app);
     std::string data = instanceName+"="+instanceVersion+"\n";
     outfile << data;
     instancePath = "version/" +
@@ -678,7 +683,6 @@ int main() {
     const Json::Value& libraries = versionFileRoot["libraries"];
     uint64_t totalSize = 0;
     uint64_t downloadedSize = 0;
-    int fileCount = 0;
 
     // Loop through each library
     for (const auto& library : libraries) {
@@ -705,18 +709,40 @@ int main() {
         }
     }
 
+    const int numThreadsLibs = 20;
+    std::vector<std::thread> Libthreads;
     // Loop through each library again to download
     for (const auto& library : libraries) {
         // Check if the library has "rules"
         if (!library.isMember("rules") || library["rules"].empty()) {
             // If there are no rules, it's considered cross-platform
             const Json::Value& downloads = library["downloads"]["artifact"];
+            path = downloads["path"].asString();
             std::string url = downloads["url"].asString();
-            std::string path = downloads["path"].asString();
-            downloadFile(url.c_str(), path.c_str());
-            // Update downloaded size and file count
-            downloadedSize += downloads["size"].asUInt64();
-            fileCount++;
+            libPath = "libraries/"+path;
+            size_t found = libPath.find_last_of("/");
+            if (found != std::string::npos) {
+                LibPathFolder = libPath.substr(0, found + 1);
+            }
+            std::filesystem::create_directories(LibPathFolder);
+
+            if (std::filesystem::exists(libPath) && std::filesystem::is_regular_file(libPath))
+            {
+              std::cout << "library exist, not downloading" << std::endl;
+            }
+            else {
+              double progress = (double)downloadedSize / totalSize * 100;
+              std::cout << "Downloading "<<std::fixed << std::setprecision(2) << progress << "%"<<" : " << url<< std::endl;
+              std::cout<<"cp dl"<<std::endl;
+              Libthreads.emplace_back([url, libPath, &downloadedSize, LibPathFolder]() {
+                    std::cout<<url.c_str()<<":"<<libPath.c_str()<<std::endl;
+                    downloadFile(url.c_str(), libPath.c_str());
+                    // Update downloaded size
+                    std::lock_guard<std::mutex> lock(downloadedSizeMutex);
+                    downloadedSize += std::filesystem::file_size(libPath);
+                });
+            }
+            
         } else {
             // Check if any rule applies to "linux"
             bool linuxRuleFound = false;
@@ -730,15 +756,46 @@ int main() {
             // If a rule for "linux" was found, include the library
             if (linuxRuleFound) {
                 const Json::Value& downloads = library["downloads"]["artifact"];
-                std::string url = downloads["url"].asString();
                 std::string path = downloads["path"].asString();
-                downloadFile(url.c_str(), path.c_str());
-                // Update downloaded size and file count
-                downloadedSize += downloads["size"].asUInt64();
-                fileCount++;
+                std::string url = downloads["url"].asString();
+                libPath = "libraries/"+path;
+                size_t found = libPath.find_last_of("/");
+                if (found != std::string::npos) {
+                    LibPathFolder = libPath.substr(0, found + 1);
+                }
+                std::filesystem::create_directories(LibPathFolder);
+                if (std::filesystem::exists(libPath) && std::filesystem::is_regular_file(libPath))
+                {
+                  std::cout << "library exist, not downloading" << std::endl;
+                }
+                else {
+                  double progress = (double)downloadedSize / totalSize * 100;
+                  std::cout << "Downloading "<<std::fixed << std::setprecision(2) << progress << "%"<<" : " << url<< std::endl;
+                  std::cout<<"linux dl"<<std::endl;
+                  Libthreads.emplace_back([url, libPath, &downloadedSize, LibPathFolder]() {
+                    std::cout<<url.c_str()<<":"<<libPath.c_str()<<std::endl;
+                    downloadFile(url.c_str(), libPath.c_str());
+                    // Update downloaded size
+                    std::lock_guard<std::mutex> lock(downloadedSizeMutex);
+                    downloadedSize += std::filesystem::file_size(libPath);//downloads["size"].asUInt64()
+                });
+                }
             }
         }
 
+        // Limit the number of concurrent threads
+        if (Libthreads.size() >= numThreadsLibs) {
+            // Wait for threads to finish
+            for (auto& thread : Libthreads) {
+              if (thread.joinable())
+                thread.join();
+            }
+            Libthreads.clear();
+        }
+        for (auto& thread : Libthreads) {
+          if (thread.joinable())
+            thread.join();
+        }
         // Calculate download speed
         auto endTime = std::chrono::steady_clock::now();
         double elapsedTime = std::chrono::duration<double>(endTime - startTime).count();
@@ -779,28 +836,33 @@ int main() {
 
     // Variables to track progress
     downloadedSize = 0;
-    fileCount = 0;
     startTime = std::chrono::steady_clock::now();
+    const int numThreads = 20; // Adjust as needed
+    std::vector<std::thread> threads;
     // Loop through each object to download
-    for (const auto& object : objects) {
-        std::string hash = object["hash"].asString();
-        std::string firstTwoChars = hash.substr(0, 2);
-        std::string hashAssetFolder = "assets/objects/" + firstTwoChars;
-        std::filesystem::create_directories(hashAssetFolder);
-        std::string assetDownloadURL = "https://resources.download.minecraft.net/" + firstTwoChars + "/" + hash;
-        std::string assetDownloadLocation = hashAssetFolder + "/" + hash;
+    for (Json::Value::const_iterator it = objects.begin(); it != objects.end(); ++it) {
+       std::string key = it.key().asString();
+      const Json::Value& object = *it;
+      std::string hash = object["hash"].asString();
+      std::string hashAssetFolder = "assets/objects/" + key.substr(0, key.find_last_of('/'));
+      std::filesystem::create_directories(hashAssetFolder);
+      std::string assetDownloadURL = "https://resources.download.minecraft.net/" + hash.substr(0, 2) + "/" + hash;
+      std::string assetDownloadLocation = "assets/objects/" + key;
 
-        std::string fileName = object["name"].asString();
         // Display progress percentage
         double progress = (double)downloadedSize / totalSize * 100;
-        std::cout << "Downloading " << std::fixed << std::setprecision(2) << progress << "%: " << fileName << std::endl;
+        std::cout << "Downloading " << std::fixed << std::setprecision(2) << progress << "%: " << key << std::endl;
 
-        // Download the file
-        downloadFile(assetDownloadURL.c_str(), assetDownloadLocation.c_str());
+        // Create a thread for downloading each file
+        threads.emplace_back([assetDownloadURL, assetDownloadLocation, &downloadedSize, &totalSize]() {
+            downloadFile(assetDownloadURL.c_str(), assetDownloadLocation.c_str());
+            // Update downloaded size
+            std::lock_guard<std::mutex> lock(downloadedSizeMutex);
+            downloadedSize += std::filesystem::file_size(assetDownloadLocation);
+        });
 
         // Update downloaded size and file count
         downloadedSize += object["size"].asUInt64();
-        fileCount++;
 
         // Calculate download speed
         auto endTime = std::chrono::steady_clock::now();
@@ -811,13 +873,26 @@ int main() {
         static const char* suffixes[] = {"B", "KB", "MB", "GB"};
         int suffixIndex = 0;
         double size = downloadSpeed;
-        while (size >= 1024 && suffixIndex < 4) {
+        while (size >= 1024 && suffixIndex < 3) {
             size /= 1024;
             suffixIndex++;
         }
         std::stringstream ss;
         ss << std::fixed << std::setprecision(2) << size << " " << suffixes[suffixIndex];
         std::cout << "Download speed: " << ss.str() << "/s" << std::endl;
+
+        // Limit the number of concurrent threads
+        if (threads.size() >= numThreads) {
+            // Wait for threads to finish
+            for (auto& thread : threads) {
+                thread.join();
+            }
+            threads.clear();
+        }
+    }
+
+    for (auto& thread : threads) {
+        thread.join();
     }
 
     std::cout << "Download complete!" << std::endl;
