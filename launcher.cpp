@@ -3,8 +3,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <jsoncpp/json/json.h>
-#include <jsoncpp/json/value.h>
+#include <json/json.h>
+#include <json/value.h>
 #include <list>
 #include <string>
 #include <chrono>
@@ -14,12 +14,14 @@
 #include <iomanip>
 #include <sstream>
 #include <vector>
+#include<unistd.h>
+#include <map>
 
-std::mutex downloadedSizeMutex;
+
+std::mutex downloadedSizeMutex; // TODO :replace threading with multiplexing
 
 size_t write_data(void *ptr, size_t size, size_t nmemb, FILE *stream) {
-  size_t written = fwrite(ptr, size, nmemb, stream);
-  return written;
+  return fwrite(ptr, size, nmemb, stream);
 }
 size_t writeCallback(char* ptr, size_t size, size_t nmemb, std::string* data) {
     data->append(ptr, size * nmemb);
@@ -56,8 +58,7 @@ int downloadFile(const char *url, const char *output_filename) {
 
     // Check for errors
     if (res != CURLE_OK) {
-      std::cerr << "curl_easy_perform() failed: " << curl_easy_strerror(res)
-                << std::endl;
+      std::cerr << "curl_easy_perform() failed: " << curl_easy_strerror(res)<< std::endl;
     }
 
     // Clean up
@@ -709,7 +710,6 @@ int main() {
         }
     }
 
-    const int numThreadsLibs = 20;
     std::vector<std::thread> Libthreads;
     // Loop through each library again to download
     for (const auto& library : libraries) {
@@ -733,12 +733,10 @@ int main() {
             else {
               double progress = (double)downloadedSize / totalSize * 100;
               std::cout << "Downloading "<<std::fixed << std::setprecision(2) << progress << "%"<<" : " << url<< std::endl;
-              std::cout<<"cp dl"<<std::endl;
               Libthreads.emplace_back([url, libPath, &downloadedSize, LibPathFolder]() {
-                    std::cout<<url.c_str()<<":"<<libPath.c_str()<<std::endl;
                     downloadFile(url.c_str(), libPath.c_str());
                     // Update downloaded size
-                    std::lock_guard<std::mutex> lock(downloadedSizeMutex);
+                    std::lock_guard<std::mutex> lock(downloadedSizeMutex);//TODO :replacee threading with multiplexing
                     downloadedSize += std::filesystem::file_size(libPath);
                 });
             }
@@ -770,28 +768,16 @@ int main() {
                 }
                 else {
                   double progress = (double)downloadedSize / totalSize * 100;
-                  std::cout << "Downloading "<<std::fixed << std::setprecision(2) << progress << "%"<<" : " << url<< std::endl;
-                  std::cout<<"linux dl"<<std::endl;
                   Libthreads.emplace_back([url, libPath, &downloadedSize, LibPathFolder]() {
-                    std::cout<<url.c_str()<<":"<<libPath.c_str()<<std::endl;
                     downloadFile(url.c_str(), libPath.c_str());
                     // Update downloaded size
-                    std::lock_guard<std::mutex> lock(downloadedSizeMutex);
+                    std::lock_guard<std::mutex> lock(downloadedSizeMutex); //TODO :replacee threading with multiplexing
                     downloadedSize += std::filesystem::file_size(libPath);//downloads["size"].asUInt64()
                 });
                 }
             }
         }
 
-        // Limit the number of concurrent threads
-        if (Libthreads.size() >= numThreadsLibs) {
-            // Wait for threads to finish
-            for (auto& thread : Libthreads) {
-              if (thread.joinable())
-                thread.join();
-            }
-            Libthreads.clear();
-        }
         for (auto& thread : Libthreads) {
           if (thread.joinable())
             thread.join();
@@ -824,76 +810,101 @@ int main() {
     std::cout<<client["file"]["url"].asString()<<std::endl;
     downloadFile(client["file"]["url"].asString().c_str(), log_config_file.c_str());
 
+
+    //*******************
+    //* ASSETS DOWNLOAD *
+    //*******************  
+      // Variables to track progress
+
+
+    curl_global_init(CURL_GLOBAL_ALL);
+    CURLM *multi_handle = curl_multi_init();
+
     std::ifstream assetsIndexFile(assetIndexDownloadPath);
+    // Parse the JSON file
     Json::Value assets;
-    assetsIndexFile >> assets;
-    const Json::Value objects = assets["objects"];
-      // Calculate total size of all files
-    totalSize = 0;
-    for (const auto& object : objects) {
-        totalSize += object["size"].asUInt64();
+    Json::Reader reader;
+    if (!reader.parse(assetsIndexFile, assets)) {
+    std::cout << assets["objects"].type() << std::endl;
+        std::cerr << "Failed to parse JSON file." << std::endl;
+        assetsIndexFile.close();
+        return 1;
     }
+    assetsIndexFile.close();
 
-    // Variables to track progress
-    downloadedSize = 0;
-    startTime = std::chrono::steady_clock::now();
-    const int numThreads = 20; // Adjust as needed
-    std::vector<std::thread> threads;
-    // Loop through each object to download
-    for (Json::Value::const_iterator it = objects.begin(); it != objects.end(); ++it) {
-       std::string key = it.key().asString();
-      const Json::Value& object = *it;
-      std::string hash = object["hash"].asString();
-      std::string hashAssetFolder = "assets/objects/" + key.substr(0, key.find_last_of('/'));
-      std::filesystem::create_directories(hashAssetFolder);
-      std::string assetDownloadURL = "https://resources.download.minecraft.net/" + hash.substr(0, 2) + "/" + hash;
-      std::string assetDownloadLocation = "assets/objects/" + key;
+    // Extract hashes from the JSON
+    std::vector<std::string> hashes;
+    for (const auto &element : assets["objects"]) {
+    // Ensure each element is an object
+    if (element.isObject()) {
+        // Extract the hash value from each object
+        const std::string hash = element["hash"].asString();
+        hashes.push_back(hash);
+    }
+}
 
-        // Display progress percentage
-        double progress = (double)downloadedSize / totalSize * 100;
-        std::cout << "Downloading " << std::fixed << std::setprecision(2) << progress << "%: " << key << std::endl;
 
-        // Create a thread for downloading each file
-        threads.emplace_back([assetDownloadURL, assetDownloadLocation, &downloadedSize, &totalSize]() {
-            downloadFile(assetDownloadURL.c_str(), assetDownloadLocation.c_str());
-            // Update downloaded size
-            std::lock_guard<std::mutex> lock(downloadedSizeMutex);
-            downloadedSize += std::filesystem::file_size(assetDownloadLocation);
-        });
+    // Base URL
+    std::string base_url = "https://resources.download.minecraft.net/";
 
-        // Update downloaded size and file count
-        downloadedSize += object["size"].asUInt64();
+    // Limit of simultaneous downloads
+    int max_simultaneous_downloads = 1023;
 
-        // Calculate download speed
-        auto endTime = std::chrono::steady_clock::now();
-        double elapsedTime = std::chrono::duration<double>(endTime - startTime).count();
-        double downloadSpeed = (double)downloadedSize / elapsedTime;
-
-        // Display download speed
-        static const char* suffixes[] = {"B", "KB", "MB", "GB"};
-        int suffixIndex = 0;
-        double size = downloadSpeed;
-        while (size >= 1024 && suffixIndex < 3) {
-            size /= 1024;
-            suffixIndex++;
-        }
-        std::stringstream ss;
-        ss << std::fixed << std::setprecision(2) << size << " " << suffixes[suffixIndex];
-        std::cout << "Download speed: " << ss.str() << "/s" << std::endl;
-
-        // Limit the number of concurrent threads
-        if (threads.size() >= numThreads) {
-            // Wait for threads to finish
-            for (auto& thread : threads) {
-                thread.join();
+    // Start downloading
+    int running_handles = 0;
+    std::vector<CURL *> easy_handles;
+    for (const auto &hash : hashes) {
+        if (running_handles >= max_simultaneous_downloads) {
+            // Wait for a handle to complete before adding new ones
+            curl_multi_wait(multi_handle, NULL, 0, 1000, NULL);
+            int msgs_in_queue;
+            CURLMsg *msg;
+            while ((msg = curl_multi_info_read(multi_handle, &msgs_in_queue))) {
+                if (msg->msg == CURLMSG_DONE) {
+                    running_handles--;
+                }
             }
-            threads.clear();
+        }
+
+        CURL *curl_handle = curl_easy_init();
+        if (curl_handle) {
+            std::string url = base_url + hash.substr(0, 2) + "/" + hash;
+            std::string filepath = "assets/" + hash.substr(0, 2) + "/" + hash;
+            std::filesystem::create_directory("assets/");
+            std::filesystem::create_directory("assets/" + hash.substr(0, 2));
+
+            FILE *fp = fopen(filepath.c_str(), "wb");
+            if (fp) {
+                curl_easy_setopt(curl_handle, CURLOPT_URL, url.c_str());
+                curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, fp);
+                curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, NULL);
+                curl_multi_add_handle(multi_handle, curl_handle);
+                easy_handles.push_back(curl_handle);
+                running_handles++;
+                std::cout<<"downloading : "<<filepath<<std::endl;
+            } else {
+                std::cerr << "Failed to open file for writing: " << filepath << std::endl;
+            }
+        } else {
+            std::cerr << "Failed to initialize libcurl handle: " << base_url+"/"+hash.substr(0, 2)+"/"+hash << std::endl;
         }
     }
 
-    for (auto& thread : threads) {
-        thread.join();
+    // Perform the downloads
+    int still_running = 0;
+    do {
+        curl_multi_perform(multi_handle, &still_running);
+    } while (still_running);
+
+    // Clean up
+    for (auto handle : easy_handles) {
+        curl_multi_remove_handle(multi_handle, handle);
+        curl_easy_cleanup(handle);
     }
+    curl_multi_cleanup(multi_handle);
+    curl_global_cleanup();
+
+
 
     std::cout << "Download complete!" << std::endl;
 

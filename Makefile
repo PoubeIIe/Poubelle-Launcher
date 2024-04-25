@@ -10,3 +10,4 @@ clean:
 	rm -rf version
 	rm -rf instances_versions.cfg
 	rm -rf version_manifest_v2.json
+	clear
